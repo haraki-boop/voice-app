@@ -18,36 +18,39 @@ LOCAL_CREDENTIALS_FILE = "sheet_key.json"
 CHATWORK_API_TOKEN = st.secrets.get("CHATWORK_API_TOKEN", "")
 CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 
-# 画面設定（スマホ表示時の余白を大幅カット）
+# 画面設定
 st.set_page_config(page_title="音声台数表", page_icon="🎙️", layout="centered")
 
-# スマホ向けカスタムCSS（上部の余白削除・ボタンを画面幅いっぱいに拡大）
+# スマホ表示用レイアウトの微調整（文字切れ防止）
 st.markdown(
     """
     <style>
         .block-container {
-            padding-top: 1rem !important;
+            padding-top: 4rem !important;
             padding-bottom: 2rem !important;
-            padding-left: 0.8rem !important;
-            padding-right: 0.8rem !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
         }
         .stButton>button {
             width: 100% !important;
-            height: 3.2rem !important;
-            font-size: 1.1rem !important;
+            height: 3.5rem !important;
+            font-size: 1.2rem !important;
             font-weight: bold !important;
             border-radius: 10px !important;
         }
-        h3 {
-            margin-bottom: 0.2rem !important;
+        [data-testid="stAudioInput"] {
+            border: 2px solid #ff4b4b !important;
+            border-radius: 12px !important;
+            padding: 8px !important;
+            background-color: #fff5f5 !important;
         }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# コンパクトなスマホ用ヘッダー
-st.markdown("### 🎙️ 音声台数表 自動入力")
+# ヘッダー表示
+st.title("🎙️ 音声台数表 自動入力")
 
 
 # --- スプレッドシート接続用関数 ---
@@ -257,21 +260,9 @@ tab1, tab2 = st.tabs(["🎙️ スマホ直接録音", "📁 ファイル選択"
 target_audio = None
 
 with tab1:
-    st.markdown(
-        """
-        <div style="background-color: #ffebe9; padding: 10px 12px; border-radius: 8px; border: 1.5px solid #ff4b4b; margin-bottom: 10px;">
-            <p style="color: #d93838; margin:0; font-size: 13px; font-weight: bold; line-height: 1.4;">
-                🔴 <b>録音手順：</b><br>
-                下の枠内の <b>🎤 マイク</b> をタップして開始 ➔ 話し終えたら再度タップして停止
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    audio_recorded = st.audio_input("タップして録音")
+    audio_recorded = st.audio_input("🔴 録音開始（タップでスタート／停止）")
     if audio_recorded is not None:
-        st.success("✅ 録音完了！")
+        st.success("✅ 録音が完了しました！")
         target_audio = audio_recorded
 
 with tab2:
