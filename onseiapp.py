@@ -10,7 +10,7 @@ import gspread
 import streamlit as st
 
 # ==========================================
-# 設定項目 (st.secrets から読み込み)
+# 設定項目 (st.secrets から安全に読み込み)
 # ==========================================
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 SPREADSHEET_NAME = "音声アプリ"
@@ -18,22 +18,36 @@ LOCAL_CREDENTIALS_FILE = "sheet_key.json"
 CHATWORK_API_TOKEN = st.secrets.get("CHATWORK_API_TOKEN", "")
 CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 
+# 画面設定
 st.set_page_config(page_title="音声台数表アプリ", page_icon="🎙️")
 st.title("🎙️ 音声台数表 自動入力アプリ")
 st.write("スマホから直接声を吹き込んで、台数表の更新とChatwork報告を行います。")
 
 
-# --- スプレッドシート接続 ---
+# --- スプレッドシート接続用関数 ---
 def get_gspread_client():
-    if "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        # 改行コードの崩れを自動修復する処理を追加
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    # 1. Streamlit Secrets の GCP_JSON から読み込み (JSON文字列丸ごと)
+    if "GCP_JSON" in st.secrets:
+        creds_dict = json.loads(st.secrets["GCP_JSON"])
         return gspread.service_account_from_dict(creds_dict)
+    # 2. TOML形式の [gcp_service_account] から読み込み
+    elif "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace(
+                "\\n", "\n"
+            )
+        return gspread.service_account_from_dict(creds_dict)
+    # 3. PCローカル環境の json ファイルから読み込み
+    elif os.path.exists(LOCAL_CREDENTIALS_FILE):
+        with open(LOCAL_CREDENTIALS_FILE, encoding="utf-8") as f:
+            creds_data = json.load(f)
+        return gspread.service_account_from_dict(creds_data)
+    else:
+        raise FileNotFoundError("スプレッドシートの認証鍵が見つかりません。")
 
 
-# --- Chatwork送信 ---
+# --- Chatwork送信用関数 ---
 def send_chatwork_message(message):
     if not CHATWORK_API_TOKEN:
         st.warning("Chatwork APIトークンが設定されていません。")
@@ -45,10 +59,10 @@ def send_chatwork_message(message):
         "Content-Type": "application/x-www-form-urlencoded",
     }
     data = urllib.parse.urlencode({"body": message}).encode("utf-8")
+
     req = urllib.request.Request(
         url, data=data, headers=headers, method="POST"
     )
-
     try:
         with urllib.request.urlopen(req) as res:
             return True
@@ -57,7 +71,7 @@ def send_chatwork_message(message):
         return False
 
 
-# --- ワークシート取得 ---
+# --- ワークシート取得・初期化関数 ---
 def get_or_create_sheet(spreadsheet, sheet_name, headers):
     try:
         ws = spreadsheet.worksheet(sheet_name)
@@ -70,23 +84,27 @@ def get_or_create_sheet(spreadsheet, sheet_name, headers):
     return ws
 
 
-# --- 音声処理メイン ---
+# --- 音声処理メイン関数 ---
 def process_audio(file_path):
     if not GEMINI_API_KEY:
         raise ValueError("Gemini APIキーが設定されていません。")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
+    # 1. スプレッドシート＆各タブの接続
     gc = get_gspread_client()
     spreadsheet = gc.open(SPREADSHEET_NAME)
 
+    # タブ1: 音声ログ（履歴用）
     ws_log = get_or_create_sheet(
         spreadsheet, "音声ログ", ["登録日時", "場所・拠点", "台数", "音声全文"]
     )
+    # タブ2: 台数一覧（マスター上書き用）
     ws_master = get_or_create_sheet(
         spreadsheet, "台数一覧", ["拠点名", "最新台数", "最終更新日時"]
     )
 
+    # 2. Geminiアップロード
     uploaded_file = client.files.upload(file=file_path)
 
     while uploaded_file.state.name == "PROCESSING":
@@ -96,6 +114,7 @@ def process_audio(file_path):
     if uploaded_file.state.name == "FAILED":
         raise ValueError("音声の処理に失敗しました。")
 
+    # 3. Gemini解析
     prompt = """
     音声ファイルを聴き取り、「場所（拠点名）」と「台数（数値）」の組をすべて抽出してください。
     
@@ -120,6 +139,7 @@ def process_audio(file_path):
 
     client.files.delete(name=uploaded_file.name)
 
+    # 4. データ解析＆スプレッドシート更新
     result = json.loads(response.text)
     items = result.get("items", [])
     transcription = result.get("transcription", "")
@@ -137,8 +157,10 @@ def process_audio(file_path):
             if not loc:
                 continue
 
+            # 音声ログへ履歴追加
             ws_log.append_row([now, loc, cnt, transcription])
 
+            # 台数一覧の該当行を検索して上書き
             row_index = None
             for idx, cell_value in enumerate(master_locations):
                 if cell_value.strip() == loc:
@@ -156,6 +178,7 @@ def process_audio(file_path):
     else:
         summary_list.append("・データ抽出なし")
 
+    # 5. Chatwork通知
     details_str = "\n".join(summary_list)
     cw_message = f"""[info][title]📱 音声ログ記録＆マスター表更新完了[/title]日時: {now}
 
@@ -177,12 +200,14 @@ tab1, tab2 = st.tabs(["🎙️ スマホ録音", "📁 ファイル選択"])
 target_audio = None
 
 with tab1:
-    st.error(
-        "👇 **【操作手順】**\n1. 枠の中の **マイクアイコン 🎤** をタップして録音開始\n2. 話し終わったら **四角アイコン ⏹️** をタップして停止"
+    st.info(
+        "💡 **【録音の使い方】**\n"
+        "1. 下のプレイヤーの左端にある **「マイク 🎤」** を押して録音開始\n"
+        "2. 話し終わったら **「四角 ⏹️」** を押して停止"
     )
-    audio_recorded = st.audio_input("ここをタップして録音")
+    audio_recorded = st.audio_input("マイク録音")
     if audio_recorded is not None:
-        st.success("✅ 音声データの準備ができました！")
+        st.success("✅ 音声データがセットされました！")
         target_audio = audio_recorded
 
 with tab2:
@@ -218,4 +243,4 @@ if target_audio is not None:
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 else:
-    st.info("上の「録音」または「ファイル選択」で音声をセットしてください。")
+    st.info("上の「スマホ録音」または「ファイル選択」で音声をセットしてください。")
