@@ -4,6 +4,7 @@ import os
 import time
 import urllib.parse
 import urllib.request
+import base64
 from google import genai
 from google.genai import types
 import gspread
@@ -21,7 +22,7 @@ CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 # 画面設定
 st.set_page_config(page_title="音声台数表", page_icon="🎙️", layout="centered")
 
-# スマホ向け余白調整
+# スマホ向けレイアウト調整
 st.markdown(
     """
     <style>
@@ -252,13 +253,122 @@ def process_audio(file_path):
 st.subheader("① 音声を準備")
 tab1, tab2 = st.tabs(["🎙️ スマホから直接録音", "📁 ファイルを選択"])
 
-target_audio = None
+target_audio_bytes = None
 
 with tab1:
-    audio_recorded = st.audio_input("タップして録音を開始（もう一度タップで停止）")
-    if audio_recorded is not None:
-        st.success("✅ 音声データがセットされました！")
-        target_audio = audio_recorded
+    # 波形エリア（00:00表示）を維持しつつ、下に独立した「録音開始」「録音停止」ボタンを配置
+    waveform_recorder_html = """
+    <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center;">
+        <div style="display: flex; align-items: center; justify-content: space-between; background: #e8ecef; padding: 10px 15px; border-radius: 8px; margin-bottom: 12px;">
+            <span style="font-size: 18px;">🎤</span>
+            <span style="color: #b0b0b0; letter-spacing: 3px;">♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦</span>
+            <span id="waveTimer" style="font-family: monospace; font-size: 16px; color: #555;">00:00</span>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; gap: 10px;">
+            <button id="btnStart" onclick="startRec()" style="
+                flex: 1; background-color: #ff4b4b; color: white; border: none; padding: 12px 0; 
+                font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer;">
+                🔴 録音開始
+            </button>
+            <button id="btnStop" onclick="stopRec()" disabled style="
+                flex: 1; background-color: #6c757d; color: white; border: none; padding: 12px 0; 
+                font-size: 16px; font-weight: bold; border-radius: 8px; cursor: not-allowed;">
+                ⬛ 録音停止
+            </button>
+        </div>
+
+        <audio id="audioPlayback" controls style="display:none; width: 100%; margin-top: 12px;"></audio>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let timerInterval;
+        let seconds = 0;
+
+        async function startRec() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audioPlayback = document.getElementById('audioPlayback');
+                    audioPlayback.src = audioUrl;
+                    audioPlayback.style.display = 'block';
+
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                        const base64Audio = reader.result.split(',')[1];
+                        window.parent.postMessage({
+                            type: 'streamlit:setComponentValue',
+                            value: base64Audio
+                        }, '*');
+                    };
+                };
+
+                mediaRecorder.start();
+
+                document.getElementById('btnStart').disabled = true;
+                document.getElementById('btnStart').style.backgroundColor = '#6c757d';
+                document.getElementById('btnStart').style.cursor = 'not-allowed';
+
+                document.getElementById('btnStop').disabled = false;
+                document.getElementById('btnStop').style.backgroundColor = '#28a745';
+                document.getElementById('btnStop').style.cursor = 'pointer';
+
+                seconds = 0;
+                document.getElementById('waveTimer').innerText = '00:00';
+                timerInterval = setInterval(() => {
+                    seconds++;
+                    const m = String(Math.floor(seconds / 60)).padStart(2, '0');
+                    const s = String(seconds % 60).padStart(2, '0');
+                    document.getElementById('waveTimer').innerText = `${m}:${s}`;
+                }, 1000);
+
+            } catch (err) {
+                alert('マイクの使用許可が必要です: ' + err);
+            }
+        }
+
+        function stopRec() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+            clearInterval(timerInterval);
+
+            document.getElementById('btnStart').disabled = false;
+            document.getElementById('btnStart').style.backgroundColor = '#ff4b4b';
+            document.getElementById('btnStart').style.cursor = 'pointer';
+
+            document.getElementById('btnStop').disabled = true;
+            document.getElementById('btnStop').style.backgroundColor = '#6c757d';
+            document.getElementById('btnStop').style.cursor = 'not-allowed';
+        }
+    </script>
+    """
+
+    recorded_base64 = st.components.v1.html(waveform_recorder_html, height=160)
+
+    if "recorded_audio_bytes" not in st.session_state:
+        st.session_state["recorded_audio_bytes"] = None
+
+    if recorded_base64:
+        st.session_state["recorded_audio_bytes"] = base64.b64decode(
+            recorded_base64
+        )
+
+    if st.session_state["recorded_audio_bytes"] is not None:
+        target_audio_bytes = st.session_state["recorded_audio_bytes"]
 
 with tab2:
     audio_uploaded = st.file_uploader(
@@ -266,16 +376,16 @@ with tab2:
         type=["m4a", "mp3", "wav", "aac"],
     )
     if audio_uploaded is not None:
-        target_audio = audio_uploaded
+        target_audio_bytes = audio_uploaded.getvalue()
 
 st.divider()
 
 st.subheader("② 処理を実行")
-if target_audio is not None:
+if target_audio_bytes is not None:
     if st.button("🚀 解析して登録・通知する", type="primary"):
         temp_path = "temp_input_audio.wav"
         with open(temp_path, "wb") as f:
-            f.write(target_audio.getbuffer())
+            f.write(target_audio_bytes)
 
         with st.spinner("解析・スプレッドシート更新中..."):
             try:
