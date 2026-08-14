@@ -15,6 +15,7 @@ import streamlit as st
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 SPREADSHEET_NAME = "音声アプリ"          # Googleスプレッドシートのファイル名
 TEMPLATE_SHEET_NAME = "台数表（原本）"  # コピー元にするタブの名前
+LOG_SHEET_NAME = "音声ログ"             # ログ保存用のタブの名前
 LOCAL_CREDENTIALS_FILE = "sheet_key.json"
 CHATWORK_API_TOKEN = st.secrets.get("CHATWORK_API_TOKEN", "")
 CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
@@ -41,6 +42,19 @@ def get_gspread_client():
         return gspread.service_account_from_dict(creds_data)
     else:
         raise FileNotFoundError("スプレッドシートの認証情報が見つかりません。")
+
+
+# --- ワークシート取得・初期化関数 ---
+def get_or_create_sheet(spreadsheet, sheet_name, headers):
+    try:
+        ws = spreadsheet.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="10")
+
+    first_row = ws.row_values(1)
+    if not first_row:
+        ws.append_row(headers)
+    return ws
 
 
 # --- Chatwork送信関数 ---
@@ -71,6 +85,11 @@ def process_audio(file_path):
     gc = get_gspread_client()
     spreadsheet = gc.open(SPREADSHEET_NAME)
 
+    # 「音声ログ」タブの取得（なければ自動作成）
+    ws_log = get_or_create_sheet(
+        spreadsheet, LOG_SHEET_NAME, ["登録日時", "対象シート", "店舗名", "台数", "音声全文"]
+    )
+
     # 1. データ受信（実行）時点の「日付」と「曜日」を自動生成
     now_dt = datetime.now()
     weekdays_jp = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
@@ -83,7 +102,7 @@ def process_audio(file_path):
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 3. Gemini解析（503混雑エラー対策のリトライ処理を追加）
+    # 3. Gemini解析（503混雑エラー対策のリトライ処理付き）
     prompt = """
     音声ファイルを聴き取り、以下の【便情報】と【店舗・台数情報】を抽出してください。
 
@@ -108,7 +127,6 @@ def process_audio(file_path):
     }
     """
 
-    # 503エラー対策：最大3回リトライ
     response = None
     max_retries = 3
     for attempt in range(max_retries):
@@ -121,7 +139,7 @@ def process_audio(file_path):
             break
         except Exception as e:
             if ("503" in str(e) or "UNAVAILABLE" in str(e)) and attempt < max_retries - 1:
-                time.sleep(3 * (attempt + 1))  # 3秒、6秒...と待って再試行
+                time.sleep(3 * (attempt + 1))
                 continue
             client.files.delete(name=uploaded_file.name)
             raise e
@@ -139,10 +157,8 @@ def process_audio(file_path):
     new_sheet_name = f"{date_str}_{clean_bin}便" if clean_bin != "便指定なし" else date_str
 
     try:
-        # すでに同名（本日・同便）のタブが存在すれば開く
         ws = spreadsheet.worksheet(new_sheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        # なければ「台数表（原本）」タブを自動コピーして作成
         try:
             template_ws = spreadsheet.worksheet(TEMPLATE_SHEET_NAME)
         except Exception:
@@ -151,11 +167,11 @@ def process_audio(file_path):
         ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
 
     # 5. 受信時の「日付・曜日」および音声から抽出した「便」の書き込み
-    ws.update_cell(1, 2, date_str)      # B1セル：受領日の日付（例: 8月14日）
-    ws.update_cell(1, 3, day_of_week)   # C1セル：受領日の曜日（例: 金曜日）
-    ws.update_cell(1, 4, bin_str)       # D1セル：便（例: (2便)）
+    ws.update_cell(1, 2, date_str)      # B1セル：受領日の日付
+    ws.update_cell(1, 3, day_of_week)   # C1セル：受領日の曜日
+    ws.update_cell(1, 4, bin_str)       # D1セル：便
 
-    # 6. 店舗台数の書き込み（A列検索 ➔ F列＝一括 へ入力）
+    # 6. 店舗台数の書き込み＆「音声ログ」タブへ履歴追加
     a_column_values = ws.col_values(1)
     summary_list = [f"【シート作成/更新】{new_sheet_name}"]
     summary_list.append(f"・受領日: {date_str} ({day_of_week}) {bin_str}")
@@ -167,6 +183,9 @@ def process_audio(file_path):
 
             if not loc:
                 continue
+
+            # 「音声ログ」タブへ無条件で1件ずつ追加保存
+            ws_log.append_row([now_time_str, new_sheet_name, loc, cnt, transcription])
 
             row_index = None
             for idx, cell_value in enumerate(a_column_values):
@@ -180,6 +199,8 @@ def process_audio(file_path):
             else:
                 summary_list.append(f"・{loc}：店舗名がシートに見つかりません")
     else:
+        # データが抽出できなかった場合も全文だけログに残す
+        ws_log.append_row([now_time_str, new_sheet_name, "なし", 0, transcription])
         summary_list.append("・台数データ抽出なし")
 
     # 7. Chatworkへ通知
@@ -222,7 +243,7 @@ if target_audio is not None:
         with open(temp_path, "wb") as f:
             f.write(target_audio.getbuffer())
 
-        with st.spinner("原本コピー・本日日付適用・台数更新中..."):
+        with st.spinner("原本コピー・本日日付適用・台数更新・ログ記録中..."):
             try:
                 now_time_str, summary_list, transcription = process_audio(temp_path)
                 st.success("✅ 処理が完了しました！")
