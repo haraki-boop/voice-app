@@ -18,14 +18,36 @@ LOCAL_CREDENTIALS_FILE = "sheet_key.json"
 CHATWORK_API_TOKEN = st.secrets.get("CHATWORK_API_TOKEN", "")
 CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 
-# 画面設定
-st.set_page_config(page_title="音声台数表アプリ", page_icon="🎙️")
+# 画面設定（スマホ表示時の余白を大幅カット）
+st.set_page_config(page_title="音声台数表", page_icon="🎙️", layout="centered")
 
-# タイトルを控えめなサイズ（h3）に変更してコンパクト化
-st.markdown("### 🎙️ 音声台数表 自動入力アプリ")
-st.caption(
-    "スマホから声を吹き込んで、台数表の更新とChatwork報告を行います。"
+# スマホ向けカスタムCSS（上部の余白削除・ボタンを画面幅いっぱいに拡大）
+st.markdown(
+    """
+    <style>
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 2rem !important;
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+        }
+        .stButton>button {
+            width: 100% !important;
+            height: 3.2rem !important;
+            font-size: 1.1rem !important;
+            font-weight: bold !important;
+            border-radius: 10px !important;
+        }
+        h3 {
+            margin-bottom: 0.2rem !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
+
+# コンパクトなスマホ用ヘッダー
+st.markdown("### 🎙️ 音声台数表 自動入力")
 
 
 # --- スプレッドシート接続用関数 ---
@@ -230,17 +252,17 @@ def process_audio(file_path):
 
 
 # --- UI画面レイアウト ---
-st.subheader("① 音声を準備")
-tab1, tab2 = st.tabs(["🎙️ スマホ録音", "📁 ファイル選択"])
+tab1, tab2 = st.tabs(["🎙️ スマホ直接録音", "📁 ファイル選択"])
 
 target_audio = None
 
 with tab1:
     st.markdown(
         """
-        <div style="background-color: #ffebe9; padding: 12px; border-radius: 8px; border: 2px solid #ff4b4b; margin-bottom: 12px;">
-            <p style="color: #d93838; margin:0; font-size: 14px; font-weight: bold;">
-                🔴 録音手順：下のグレー枠内にある「🎤 マイク」をタップして録音開始 ➔ もう一度タップで停止
+        <div style="background-color: #ffebe9; padding: 10px 12px; border-radius: 8px; border: 1.5px solid #ff4b4b; margin-bottom: 10px;">
+            <p style="color: #d93838; margin:0; font-size: 13px; font-weight: bold; line-height: 1.4;">
+                🔴 <b>録音手順：</b><br>
+                下の枠内の <b>🎤 マイク</b> をタップして開始 ➔ 話し終えたら再度タップして停止
             </p>
         </div>
         """,
@@ -249,40 +271,38 @@ with tab1:
 
     audio_recorded = st.audio_input("タップして録音")
     if audio_recorded is not None:
-        st.success("✅ 音声データの録音が完了しました！")
+        st.success("✅ 録音完了！")
         target_audio = audio_recorded
 
 with tab2:
     audio_uploaded = st.file_uploader(
-        "録音済みファイルをアップロード",
+        "ファイルを選択",
         type=["m4a", "mp3", "wav", "aac"],
     )
     if audio_uploaded is not None:
         target_audio = audio_uploaded
 
-st.divider()
+st.markdown("---")
 
-st.subheader("② 処理を実行")
 if target_audio is not None:
     if st.button("🚀 解析して登録・通知する", type="primary"):
         temp_path = "temp_input_audio.wav"
         with open(temp_path, "wb") as f:
             f.write(target_audio.getbuffer())
 
-        with st.spinner("解析・スプレッドシート更新・Chatwork送信中..."):
+        with st.spinner("解析・スプレッドシート更新中..."):
             try:
                 now, summary_list, transcription = process_audio(temp_path)
 
                 st.success("✅ 処理が完了しました！")
 
-                st.subheader("実行結果")
-                st.write(f"**日時:** {now}")
-                st.write("**更新データ:**")
+                st.markdown("**【実行結果】**")
+                st.write(f"・日時: {now}")
                 for item in summary_list:
-                    st.write(f"- {item}")
-                st.write(f"**全文文字起こし:** {transcription}")
+                    st.write(f"・{item}")
+                st.caption(f"文字起こし: {transcription}")
 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 else:
-    st.info("上の「スマホ録音」または「ファイル選択」で音声をセットしてください。")
+    st.info("💡 上の「直接録音」または「ファイル選択」で音声をセットしてください。")
