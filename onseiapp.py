@@ -232,66 +232,7 @@ tab1, tab2 = st.tabs(["🎙️ スマホから直接録音", "📁 ファイル�
 target_audio = None
 
 with tab1:
-    # カスタムボタンの見た目定義（丸いボタン/四角いボタン風）
-    st.markdown(
-        """
-        <style>
-            .voicememo-btn-red {
-                display: inline-block;
-                width: 70px;
-                height: 70px;
-                background-color: #ff3b30;
-                border-radius: 50%;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-            }
-            .voicememo-btn-stop {
-                display: inline-block;
-                width: 40px;
-                height: 40px;
-                background-color: #ff3b30;
-                border-radius: 8px;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # 録音ON/OFF状態管理
-    if "is_recording" not in st.session_state:
-        st.session_state["is_recording"] = False
-
-    # 1. 画像そのままのグレー枠表示
-    st.markdown(
-        """
-        <div style="background-color: #f0f2f6; border-radius: 8px; padding: 12px 15px; display: flex; align-items: center; justify-content: space-between;">
-            <span style="font-size: 18px; color: #555;">🎤</span>
-            <span style="color: #c7c7cc; letter-spacing: 4px; font-weight: bold;">♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦ ♦</span>
-            <span style="font-family: monospace; font-size: 16px; color: #555;">00:00</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # 2. 指定位置（ピンク塗りつぶしの場所）にiPhoneボイスメモ風のボタンを配置
-    st.write("")
-    col_l, col_center, col_r = st.columns([1, 1, 1])
-
-    with col_center:
-        if not st.session_state["is_recording"]:
-            if st.button("🔴", key="btn_rec_start", help="録音開始"):
-                st.session_state["is_recording"] = True
-                st.rerun()
-        else:
-            if st.button("⏹️", key="btn_rec_stop", help="録音停止"):
-                st.session_state["is_recording"] = False
-                st.rerun()
-
-    # 3. 実際の録音データ受け取り
-    audio_recorded = st.audio_input(
-        "マイク録音データ",
-        label_visibility="collapsed",
-    )
+    audio_recorded = st.audio_input("タップして録音を開始（もう一度タップで停止）")
     if audio_recorded is not None:
         st.success("✅ 音声データがセットされました！")
         target_audio = audio_recorded
