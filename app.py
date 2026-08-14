@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import time
@@ -19,6 +19,9 @@ LOG_SHEET_NAME = "音声ログ"             # ログ保存用のタブの名前
 LOCAL_CREDENTIALS_FILE = "sheet_key.json"
 CHATWORK_API_TOKEN = st.secrets.get("CHATWORK_API_TOKEN", "")
 CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
+
+# 日本標準時 (JST = UTC+9) のタイムゾーン定義
+JST = timezone(timedelta(hours=9))
 
 st.set_page_config(page_title="音声台数表アプリ", page_icon="🎙️")
 st.title("🎙️ 音声台数表 自動入力アプリ")
@@ -85,13 +88,13 @@ def process_audio(file_path):
     gc = get_gspread_client()
     spreadsheet = gc.open(SPREADSHEET_NAME)
 
-    # 「音声ログ」タブの取得（なければ自動作成）
+    # 「音声ログ」タブの取得
     ws_log = get_or_create_sheet(
         spreadsheet, LOG_SHEET_NAME, ["登録日時", "対象シート", "店舗名", "台数", "音声全文"]
     )
 
-    # 1. データ受信（実行）時点の「日付」と「曜日」を自動生成
-    now_dt = datetime.now()
+    # 1. 日本時間（JST）で現在日時を取得
+    now_dt = datetime.now(JST)
     weekdays_jp = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
     date_str = f"{now_dt.month}月{now_dt.day}日"
     day_of_week = weekdays_jp[now_dt.weekday()]
@@ -102,7 +105,7 @@ def process_audio(file_path):
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 3. Gemini解析（503混雑エラー対策のリトライ処理付き）
+    # 3. Gemini解析
     prompt = """
     音声ファイルを聴き取り、以下の【便情報】と【店舗・台数情報】を抽出してください。
 
@@ -166,7 +169,7 @@ def process_audio(file_path):
         
         ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
 
-    # 5. 受信時の「日付・曜日」および音声から抽出した「便」の書き込み
+    # 5. 日本時間の日付・曜日・便の書き込み
     ws.update_cell(1, 2, date_str)      # B1セル：受領日の日付
     ws.update_cell(1, 3, day_of_week)   # C1セル：受領日の曜日
     ws.update_cell(1, 4, bin_str)       # D1セル：便
@@ -184,7 +187,7 @@ def process_audio(file_path):
             if not loc:
                 continue
 
-            # 「音声ログ」タブへ無条件で1件ずつ追加保存
+            # 「音声ログ」タブへ日本時間で追加
             ws_log.append_row([now_time_str, new_sheet_name, loc, cnt, transcription])
 
             row_index = None
@@ -199,7 +202,6 @@ def process_audio(file_path):
             else:
                 summary_list.append(f"・{loc}：店舗名がシートに見つかりません")
     else:
-        # データが抽出できなかった場合も全文だけログに残す
         ws_log.append_row([now_time_str, new_sheet_name, "なし", 0, transcription])
         summary_list.append("・台数データ抽出なし")
 
