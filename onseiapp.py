@@ -26,25 +26,26 @@ st.write("スマホから直接声を吹き込んで、台数表の更新とChat
 
 # --- スプレッドシート接続用関数 ---
 def get_gspread_client():
-    # 1. Streamlit Secrets の GCP_JSON から読み込み (JSON文字列丸ごと)
-    if "GCP_JSON" in st.secrets:
-        creds_dict = json.loads(st.secrets["GCP_JSON"])
-        return gspread.service_account_from_dict(creds_dict)
-    # 2. TOML形式の [gcp_service_account] から読み込み
-    elif "gcp_service_account" in st.secrets:
+    if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace(
                 "\\n", "\n"
             )
         return gspread.service_account_from_dict(creds_dict)
-    # 3. PCローカル環境の json ファイルから読み込み
+    elif "GCP_JSON" in st.secrets:
+        creds_dict = json.loads(st.secrets["GCP_JSON"])
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace(
+                "\\n", "\n"
+            )
+        return gspread.service_account_from_dict(creds_dict)
     elif os.path.exists(LOCAL_CREDENTIALS_FILE):
         with open(LOCAL_CREDENTIALS_FILE, encoding="utf-8") as f:
             creds_data = json.load(f)
         return gspread.service_account_from_dict(creds_data)
     else:
-        raise FileNotFoundError("スプレッドシートの認証鍵が見つかりません。")
+        raise FileNotFoundError("スプレッドシートの認証情報が見つかりません。")
 
 
 # --- Chatwork送信用関数 ---
@@ -95,16 +96,39 @@ def process_audio(file_path):
     gc = get_gspread_client()
     spreadsheet = gc.open(SPREADSHEET_NAME)
 
-    # タブ1: 音声ログ（履歴用）
     ws_log = get_or_create_sheet(
         spreadsheet, "音声ログ", ["登録日時", "場所・拠点", "台数", "音声全文"]
     )
-    # タブ2: 台数一覧（マスター上書き用）
-    ws_master = get_or_create_sheet(
+    ws_master_table = get_or_create_sheet(
         spreadsheet, "台数一覧", ["拠点名", "最新台数", "最終更新日時"]
     )
+    ws_master_dict = get_or_create_sheet(
+        spreadsheet, "拠点マスター", ["正式拠点名", "誤認しやすいキーワード"]
+    )
 
-    # 2. Geminiアップロード
+    # 2. 拠点マスターから自動補正情報を取得
+    master_rows = ws_master_dict.get_all_values()[1:]  # ヘッダー行を除外
+
+    master_info = []
+    for row in master_rows:
+        if not row or not row[0].strip():
+            continue
+        official_name = row[0].strip()
+        aliases = row[1].strip() if len(row) > 1 and row[1] else ""
+        if aliases:
+            master_info.append(
+                f"・正式名称:「{official_name}」（誤認・言い間違い候補: {aliases}）"
+            )
+        else:
+            master_info.append(f"・正式名称:「{official_name}」")
+
+    locations_prompt_text = (
+        "\n".join(master_info)
+        if master_info
+        else "（登録なし）"
+    )
+
+    # 3. Geminiアップロード
     uploaded_file = client.files.upload(file=file_path)
 
     while uploaded_file.state.name == "PROCESSING":
@@ -114,19 +138,29 @@ def process_audio(file_path):
     if uploaded_file.state.name == "FAILED":
         raise ValueError("音声の処理に失敗しました。")
 
-    # 3. Gemini解析
-    prompt = """
+    # 4. Gemini解析（拠点マスター参照プロンプト）
+    prompt = f"""
     音声ファイルを聴き取り、「場所（拠点名）」と「台数（数値）」の組をすべて抽出してください。
-    
+
+    【★最優先ルール：拠点マスターによる自動変換・補正】
+    以下は社内の「正解の拠点マスターリスト」です：
+    {locations_prompt_text}
+
+    音声で話されている場所が、上記マスターリストの「正式名称」または「誤認・言い間違い候補」に該当する場合は、
+    【必ず対応する正式名称】に自動補正・統一して出力してください。
+    （例：「都筑」や「つなしま」と聴き取れても、マスターに「横浜綱島」があれば「横浜綱島」として出力する）
+
+    ※マスターに全く該当しない明らかに新しい拠点の場合のみ、聴き取った名称をそのまま出力してください。
+
     【出力フォーマット要件】
     以下のJSON形式で厳密に出力してください。台数は半角数字の数値（integer）のみにしてください。
 
-    {
+    {{
         "items": [
-            {"location": "場所・拠点名", "count": 台数数字}
+            {{"location": "場所・拠点名", "count": 台数数字}}
         ],
         "transcription": "音声全体の正確な文字起こし全文"
-    }
+    }}
     """
 
     response = client.models.generate_content(
@@ -139,7 +173,7 @@ def process_audio(file_path):
 
     client.files.delete(name=uploaded_file.name)
 
-    # 4. データ解析＆スプレッドシート更新
+    # 5. データ解析＆スプレッドシート更新
     result = json.loads(response.text)
     items = result.get("items", [])
     transcription = result.get("transcription", "")
@@ -148,7 +182,7 @@ def process_audio(file_path):
     summary_list = []
 
     if items:
-        master_locations = ws_master.col_values(1)
+        master_locations = ws_master_table.col_values(1)
 
         for item in items:
             loc = item.get("location", "").strip()
@@ -168,17 +202,17 @@ def process_audio(file_path):
                     break
 
             if row_index:
-                ws_master.update_cell(row_index, 2, cnt)
-                ws_master.update_cell(row_index, 3, now)
+                ws_master_table.update_cell(row_index, 2, cnt)
+                ws_master_table.update_cell(row_index, 3, now)
                 summary_list.append(f"・{loc}：{cnt}台 （上書き更新）")
             else:
-                ws_master.append_row([loc, cnt, now])
+                ws_master_table.append_row([loc, cnt, now])
                 master_locations.append(loc)
                 summary_list.append(f"・{loc}：{cnt}台 （新規追加）")
     else:
         summary_list.append("・データ抽出なし")
 
-    # 5. Chatwork通知
+    # 6. Chatwork通知
     details_str = "\n".join(summary_list)
     cw_message = f"""[info][title]📱 音声ログ記録＆マスター表更新完了[/title]日時: {now}
 
