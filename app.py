@@ -4,7 +4,6 @@ import os
 import time
 import urllib.parse
 import urllib.request
-import base64
 from google import genai
 from google.genai import types
 import gspread
@@ -22,12 +21,12 @@ CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 # 画面設定
 st.set_page_config(page_title="音声台数表", page_icon="🎙️", layout="centered")
 
-# レイアウト調整
+# スマホ向け余白調整
 st.markdown(
     """
     <style>
         .block-container {
-            padding-top: 2.5rem !important;
+            padding-top: 2rem !important;
             padding-bottom: 2rem !important;
             padding-left: 1rem !important;
             padding-right: 1rem !important;
@@ -37,14 +36,15 @@ st.markdown(
             height: 3.5rem !important;
             font-size: 1.2rem !important;
             font-weight: bold !important;
-            border-radius: 12px !important;
+            border-radius: 10px !important;
         }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("🎙️ 音声台数表 自動入力")
+st.title("🎙️ 音声台数表 自動入力アプリ")
+st.write("スマホから直接声を吹き込んで、台数表の更新とChatwork報告を行います。")
 
 
 # --- スプレッドシート接続用関数 ---
@@ -249,152 +249,33 @@ def process_audio(file_path):
 
 
 # --- UI画面レイアウト ---
-tab1, tab2 = st.tabs(["🎙️ ボイスメモ録音", "📁 ファイル選択"])
+st.subheader("① 音声を準備")
+tab1, tab2 = st.tabs(["🎙️ スマホから直接録音", "📁 ファイルを選択"])
 
-target_audio_bytes = None
+target_audio = None
 
 with tab1:
-    # iPhoneボイスメモ風の単一円形ボタンUI
-    iphone_recorder_html = """
-    <div style="text-align: center; padding: 15px 0;">
-        <div id="recordBtnOuter" onclick="toggleRecording()" style="
-            width: 80px; height: 80px; border-radius: 50%; border: 4px solid #d1d1d6; 
-            display: flex; align-items: center; justify-content: center; margin: 0 auto; 
-            cursor: pointer; transition: all 0.2s ease; background-color: #ffffff;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);">
-            <div id="recordBtnInner" style="
-                width: 60px; height: 60px; border-radius: 50%; background-color: #ff3b30;
-                transition: all 0.2s ease;"></div>
-        </div>
-
-        <div id="timerDisplay" style="
-            margin-top: 15px; font-size: 22px; font-weight: bold; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #1c1c1e;">
-            00:00
-        </div>
-        <div id="statusLabel" style="
-            margin-top: 5px; font-size: 14px; color: #8e8e93; font-weight: 500;">
-            タップして録音開始
-        </div>
-
-        <audio id="audioPlayback" controls style="display:none; width: 100%; margin-top: 15px; border-radius: 8px;"></audio>
-    </div>
-
-    <script>
-        let mediaRecorder;
-        let audioChunks = [];
-        let isRecording = false;
-        let timerInterval;
-        let seconds = 0;
-
-        async function toggleRecording() {
-            if (!isRecording) {
-                // 録音開始
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream);
-                    audioChunks = [];
-
-                    mediaRecorder.ondataavailable = event => {
-                        audioChunks.push(event.data);
-                    };
-
-                    mediaRecorder.onstop = () => {
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                        const audioUrl = URL.createObjectURL(audioBlob);
-                        const audioPlayback = document.getElementById('audioPlayback');
-                        audioPlayback.src = audioUrl;
-                        audioPlayback.style.display = 'block';
-
-                        const reader = new FileReader();
-                        reader.readAsDataURL(audioBlob);
-                        reader.onloadend = () => {
-                            const base64Audio = reader.result.split(',')[1];
-                            window.parent.postMessage({
-                                type: 'streamlit:setComponentValue',
-                                value: base64Audio
-                            }, '*');
-                        };
-                    };
-
-                    mediaRecorder.start();
-                    isRecording = true;
-
-                    // UI変更（iPhoneボイスメモ風：四角ボタン・外枠赤点滅）
-                    const outer = document.getElementById('recordBtnOuter');
-                    const inner = document.getElementById('recordBtnInner');
-                    outer.style.borderColor = '#ff3b30';
-                    inner.style.borderRadius = '8px';
-                    inner.style.width = '30px';
-                    inner.style.height = '30px';
-
-                    document.getElementById('statusLabel').innerText = '録音中... タップして停止';
-                    document.getElementById('statusLabel').style.color = '#ff3b30';
-
-                    // タイマー開始
-                    seconds = 0;
-                    document.getElementById('timerDisplay').innerText = '00:00';
-                    timerInterval = setInterval(() => {
-                        seconds++;
-                        const m = String(Math.floor(seconds / 60)).padStart(2, '0');
-                        const s = String(seconds % 60).padStart(2, '0');
-                        document.getElementById('timerDisplay').innerText = `${m}:${s}`;
-                    }, 1000);
-
-                } catch (err) {
-                    alert('マイクの使用許可が必要です: ' + err);
-                }
-            } else {
-                // 録音停止
-                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                    mediaRecorder.stop();
-                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                }
-                isRecording = false;
-                clearInterval(timerInterval);
-
-                // UIリセット
-                const outer = document.getElementById('recordBtnOuter');
-                const inner = document.getElementById('recordBtnInner');
-                outer.style.borderColor = '#d1d1d6';
-                inner.style.borderRadius = '50%';
-                inner.style.width = '60px';
-                inner.style.height = '60px';
-
-                document.getElementById('statusLabel').innerText = '✅ 録音完了！';
-                document.getElementById('statusLabel').style.color = '#34c759';
-            }
-        }
-    </script>
-    """
-
-    recorded_base64 = st.components.v1.html(iphone_recorder_html, height=210)
-
-    if "recorded_audio_bytes" not in st.session_state:
-        st.session_state["recorded_audio_bytes"] = None
-
-    if recorded_base64:
-        st.session_state["recorded_audio_bytes"] = base64.b64decode(
-            recorded_base64
-        )
-
-    if st.session_state["recorded_audio_bytes"] is not None:
-        target_audio_bytes = st.session_state["recorded_audio_bytes"]
+    audio_recorded = st.audio_input("タップして録音を開始（もう一度タップで停止）")
+    if audio_recorded is not None:
+        st.success("✅ 音声データがセットされました！")
+        target_audio = audio_recorded
 
 with tab2:
     audio_uploaded = st.file_uploader(
-        "ファイルを選択",
+        "録音済みファイルをアップロード",
         type=["m4a", "mp3", "wav", "aac"],
     )
     if audio_uploaded is not None:
-        target_audio_bytes = audio_uploaded.getvalue()
+        target_audio = audio_uploaded
 
-st.markdown("---")
+st.divider()
 
-if target_audio_bytes is not None:
+st.subheader("② 処理を実行")
+if target_audio is not None:
     if st.button("🚀 解析して登録・通知する", type="primary"):
         temp_path = "temp_input_audio.wav"
         with open(temp_path, "wb") as f:
-            f.write(target_audio_bytes)
+            f.write(target_audio.getbuffer())
 
         with st.spinner("解析・スプレッドシート更新中..."):
             try:
@@ -402,13 +283,14 @@ if target_audio_bytes is not None:
 
                 st.success("✅ 処理が完了しました！")
 
-                st.markdown("**【実行結果】**")
-                st.write(f"・日時: {now}")
+                st.subheader("実行結果")
+                st.write(f"**日時:** {now}")
+                st.write("**更新データ:**")
                 for item in summary_list:
-                    st.write(f"・{item}")
-                st.caption(f"文字起こし: {transcription}")
+                    st.write(f"- {item}")
+                st.write(f"**全文文字起こし:** {transcription}")
 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 else:
-    st.info("💡 中央のボタンで録音するか、「ファイル選択」で音声をセットしてください。")
+    st.info("上の「直接録音」または「ファイル選択」で音声をセットしてください。")
