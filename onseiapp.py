@@ -8,6 +8,7 @@ from google import genai
 from google.genai import types
 import gspread
 import streamlit as st
+from streamlit_mic_recorder import mic_recorder
 
 # ==========================================
 # 設定項目 (st.secrets から安全に読み込み)
@@ -123,9 +124,7 @@ def process_audio(file_path):
             master_info.append(f"・正式名称:「{official_name}」")
 
     locations_prompt_text = (
-        "\n".join(master_info)
-        if master_info
-        else "（登録なし）"
+        "\n".join(master_info) if master_info else "（登録なし）"
     )
 
     # 3. Geminiアップロード
@@ -231,18 +230,23 @@ def process_audio(file_path):
 st.subheader("① 音声を準備")
 tab1, tab2 = st.tabs(["🎙️ スマホ録音", "📁 ファイル選択"])
 
-target_audio = None
+target_audio_bytes = None
 
 with tab1:
-    st.info(
-        "💡 **【録音の使い方】**\n"
-        "1. 下のプレイヤーの左端にある **「マイク 🎤」** を押して録音開始\n"
-        "2. 話し終わったら **「四角 ⏹️」** を押して停止"
+    st.write("ボタンをタップして録音を開始・停止してください。")
+    # 分かりやすい大きなボタンを出力
+    audio_data = mic_recorder(
+        start_prompt="🔴 録音開始",
+        stop_prompt="⬛ 録音停止（タップして完了）",
+        just_once=False,
+        use_container_width=True,
+        key="recorder",
     )
-    audio_recorded = st.audio_input("マイク録音")
-    if audio_recorded is not None:
-        st.success("✅ 音声データがセットされました！")
-        target_audio = audio_recorded
+
+    if audio_data is not None:
+        target_audio_bytes = audio_data["bytes"]
+        st.audio(target_audio_bytes, format="audio/wav")
+        st.success("✅ 録音が完了しました！下の「解析して登録・通知する」を押してください。")
 
 with tab2:
     audio_uploaded = st.file_uploader(
@@ -250,16 +254,16 @@ with tab2:
         type=["m4a", "mp3", "wav", "aac"],
     )
     if audio_uploaded is not None:
-        target_audio = audio_uploaded
+        target_audio_bytes = audio_uploaded.getvalue()
 
 st.divider()
 
 st.subheader("② 処理を実行")
-if target_audio is not None:
+if target_audio_bytes is not None:
     if st.button("🚀 解析して登録・通知する", type="primary"):
         temp_path = "temp_input_audio.wav"
         with open(temp_path, "wb") as f:
-            f.write(target_audio.getbuffer())
+            f.write(target_audio_bytes)
 
         with st.spinner("解析・スプレッドシート更新・Chatwork送信中..."):
             try:
