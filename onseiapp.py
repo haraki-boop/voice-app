@@ -8,7 +8,6 @@ from google import genai
 from google.genai import types
 import gspread
 import streamlit as st
-from streamlit_mic_recorder import mic_recorder
 
 # ==========================================
 # 設定項目 (st.secrets から安全に読み込み)
@@ -108,7 +107,7 @@ def process_audio(file_path):
     )
 
     # 2. 拠点マスターから自動補正情報を取得
-    master_rows = ws_master_dict.get_all_values()[1:]  # ヘッダー行を除外
+    master_rows = ws_master_dict.get_all_values()[1:]
 
     master_info = []
     for row in master_rows:
@@ -230,23 +229,27 @@ def process_audio(file_path):
 st.subheader("① 音声を準備")
 tab1, tab2 = st.tabs(["🎙️ スマホ録音", "📁 ファイル選択"])
 
-target_audio_bytes = None
+target_audio = None
 
 with tab1:
-    st.write("ボタンをタップして録音を開始・停止してください。")
-    # 分かりやすい大きなボタンを出力
-    audio_data = mic_recorder(
-        start_prompt="🔴 録音開始",
-        stop_prompt="⬛ 録音停止（タップして完了）",
-        just_once=False,
-        use_container_width=True,
-        key="recorder",
+    # 録音エリアの視認性を高めるカスタムスタイル
+    st.markdown(
+        """
+        <div style="background-color: #ffebe9; padding: 15px; border-radius: 10px; border: 2px solid #ff4b4b; margin-bottom: 15px;">
+            <h4 style="color: #d93838; margin:0 0 5px 0;">🔴 録音手順</h4>
+            <p style="color: #333; margin:0; font-size: 15px; font-weight: bold;">
+                下のグレー枠内にある <span style="font-size: 18px;">🎤 マイク</span> を押すと録音が始まります。<br>
+                話し終わったらもう一度押して停止してください。
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    if audio_data is not None:
-        target_audio_bytes = audio_data["bytes"]
-        st.audio(target_audio_bytes, format="audio/wav")
-        st.success("✅ 録音が完了しました！下の「解析して登録・通知する」を押してください。")
+    audio_recorded = st.audio_input("タップして録音")
+    if audio_recorded is not None:
+        st.success("✅ 音声データの録音が完了しました！")
+        target_audio = audio_recorded
 
 with tab2:
     audio_uploaded = st.file_uploader(
@@ -254,16 +257,16 @@ with tab2:
         type=["m4a", "mp3", "wav", "aac"],
     )
     if audio_uploaded is not None:
-        target_audio_bytes = audio_uploaded.getvalue()
+        target_audio = audio_uploaded
 
 st.divider()
 
 st.subheader("② 処理を実行")
-if target_audio_bytes is not None:
+if target_audio is not None:
     if st.button("🚀 解析して登録・通知する", type="primary"):
         temp_path = "temp_input_audio.wav"
         with open(temp_path, "wb") as f:
-            f.write(target_audio_bytes)
+            f.write(target_audio.getbuffer())
 
         with st.spinner("解析・スプレッドシート更新・Chatwork送信中..."):
             try:
