@@ -20,8 +20,12 @@ CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 
 # 画面設定
 st.set_page_config(page_title="音声台数表アプリ", page_icon="🎙️")
-st.title("🎙️ 音声台数表 自動入力アプリ")
-st.write("スマホから直接声を吹き込んで、台数表の更新とChatwork報告を行います。")
+
+# タイトルを控えめなサイズ（h3）に変更してコンパクト化
+st.markdown("### 🎙️ 音声台数表 自動入力アプリ")
+st.caption(
+    "スマホから声を吹き込んで、台数表の更新とChatwork報告を行います。"
+)
 
 
 # --- スプレッドシート接続用関数 ---
@@ -232,14 +236,11 @@ tab1, tab2 = st.tabs(["🎙️ スマホ録音", "📁 ファイル選択"])
 target_audio = None
 
 with tab1:
-    # 録音エリアの視認性を高めるカスタムスタイル
     st.markdown(
         """
-        <div style="background-color: #ffebe9; padding: 15px; border-radius: 10px; border: 2px solid #ff4b4b; margin-bottom: 15px;">
-            <h4 style="color: #d93838; margin:0 0 5px 0;">🔴 録音手順</h4>
-            <p style="color: #333; margin:0; font-size: 15px; font-weight: bold;">
-                下のグレー枠内にある <span style="font-size: 18px;">🎤 マイク</span> を押すと録音が始まります。<br>
-                話し終わったらもう一度押して停止してください。
+        <div style="background-color: #ffebe9; padding: 12px; border-radius: 8px; border: 2px solid #ff4b4b; margin-bottom: 12px;">
+            <p style="color: #d93838; margin:0; font-size: 14px; font-weight: bold;">
+                🔴 録音手順：下のグレー枠内にある「🎤 マイク」をタップして録音開始 ➔ もう一度タップで停止
             </p>
         </div>
         """,
