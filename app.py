@@ -83,7 +83,7 @@ def process_audio(file_path):
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 3. Gemini解析（便情報・店舗台数の抽出）
+    # 3. Gemini解析（503混雑エラー対策のリトライ処理を追加）
     prompt = """
     音声ファイルを聴き取り、以下の【便情報】と【店舗・台数情報】を抽出してください。
 
@@ -108,11 +108,24 @@ def process_audio(file_path):
     }
     """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[uploaded_file, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
+    # 503エラー対策：最大3回リトライ
+    response = None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[uploaded_file, prompt],
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            break
+        except Exception as e:
+            if ("503" in str(e) or "UNAVAILABLE" in str(e)) and attempt < max_retries - 1:
+                time.sleep(3 * (attempt + 1))  # 3秒、6秒...と待って再試行
+                continue
+            client.files.delete(name=uploaded_file.name)
+            raise e
+
     client.files.delete(name=uploaded_file.name)
 
     result = json.loads(response.text)
