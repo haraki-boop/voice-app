@@ -97,9 +97,11 @@ def process_audio(file_path, selected_category):
         except Exception:
             template_ws = spreadsheet.sheet1
         ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
-        ws.update_acell('B1', '')
-        ws.update_acell('C1', '')
-        ws.update_acell('D1', '')
+
+    # 過去のゴミデータを強制消去（既存シートの場合も毎回確実に消去する）
+    ws.update_acell('B1', '')
+    ws.update_acell('C1', '')
+    ws.update_acell('D1', '')
 
     ws.update_acell('D4', date_str)
     ws.update_acell('E4', day_of_week)
@@ -114,7 +116,6 @@ def process_audio(file_path, selected_category):
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 言われた通り「台」を付けなくても認識するルールに絞って追加しています
     prompt = f"""
     音声ファイルを聴き取り、「店舗名」と「台数（数値）」の組を抽出してください。
 
@@ -180,7 +181,6 @@ def process_audio(file_path, selected_category):
 
     target_col_idx = CATEGORY_COL_MAP[selected_category]
     
-    # 完全に元通りのリスト内容に復元
     summary_list = [f"【シート更新】{new_sheet_name}", f"【カテゴリ】{selected_category}", f"【処理時刻】{time_str}"]
     cells_to_update = []
 
@@ -203,7 +203,6 @@ def process_audio(file_path, selected_category):
 
             if row_index:
                 cells_to_update.append(gspread.Cell(row=row_index, col=target_col_idx, value=cnt))
-                # 台が付いた元の表示に戻しました
                 summary_list.append(f"・{loc}：{cnt}台")
             else:
                 summary_list.append(f"・{loc}：※店舗が見つかりません")
@@ -214,14 +213,20 @@ def process_audio(file_path, selected_category):
         ws_log.append_row([now_time_str, new_sheet_name, selected_category, "なし", 0, transcription])
         summary_list.append("・データ抽出なし")
 
+    # --- 合計・総合計の自動計算関数セット ---
+    
+    # 誤って上書きされてしまったG6の「合計」の文字を確実に復元・保護
+    ws.update_acell('G6', '合計')
+    
     g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(7, 33)]
     ws.update(range_name='G7:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
 
-    bottom_formulas = [
-        ['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)'],
-        ['=SUM(C33:C33)', '=SUM(D33:D33)', '=SUM(E33:E33)', '=SUM(F33:F33)', '=SUM(G33:G33)']
-    ]
-    ws.update(range_name='C33:G34', values=bottom_formulas, value_input_option='USER_ENTERED')
+    # 33行目（合計）の式をセット
+    row33_formulas = [['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)']]
+    ws.update(range_name='C33:G33', values=row33_formulas, value_input_option='USER_ENTERED')
+    
+    # 34行目（総合計）の複合セル用に、C34に33行目の合計をセット
+    ws.update_acell('C34', '=SUM(C33:F33)')
 
     details_str = "\n".join(summary_list)
     cw_message = f"""[info][title]📱 {selected_category} カゴ車数入力完了[/title]日時: {now_time_str}
@@ -276,7 +281,6 @@ if target_audio is not None:
                 now_time_str, summary_list, transcription = process_audio(temp_path, selected_category)
                 st.success("✅ 処理が完了しました！")
                 
-                # 完全に元の結果表示に戻しました
                 st.subheader("実行結果")
                 st.write(f"**日時:** {now_time_str}")
                 st.write("**更新データ:**")
