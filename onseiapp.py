@@ -114,13 +114,13 @@ def process_audio(file_path, selected_category):
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
+    # 言われた通り「台」を付けなくても認識するルールに絞って追加しています
     prompt = f"""
     音声ファイルを聴き取り、「店舗名」と「台数（数値）」の組を抽出してください。
 
-    【最重要ルール（数値の聞き取り・単位の有無）】
+    【最重要ルール（単位の省略・音読の数値変換）】
     ユーザーは店舗名の後に数字を言いますが、「台」という単位を付ける場合と、付けない場合があります。
-    「台」が付いていてもいなくても、必ず数字を抽出してください。
-    また、単位を省略した結果、助詞や敬称のように聞こえる場合も、以下のように「数値」として解釈してください。
+    助詞や敬称に聞こえても、以下の通り必ず「数値」として解釈し抽出してください。
 
     ・「〜いち」「〜1台」 ➔ 1
     ・「〜に」「〜2台」 ➔ 2 （例：「大高に」「大高2台」はどちらも「大高 2」）
@@ -143,12 +143,12 @@ def process_audio(file_path, selected_category):
 
     音声で聞き取った店舗名は、必ず上記のリスト内のどれに該当するかを推測し、**リストと一言一句同じ正確な名前**で出力してください。
 
-    【出力JSON形式：必ずこのフォーマットで出力すること】
+    【出力JSON形式】
     {{
         "items": [
             {{"location": "店舗名", "count": 台数数字}}
         ],
-        "transcription": "必ずここに音声全文の文字起こしを出力してください"
+        "transcription": "音声全文"
     }}
     """
 
@@ -179,8 +179,9 @@ def process_audio(file_path, selected_category):
     now_time_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     target_col_idx = CATEGORY_COL_MAP[selected_category]
-    summary_list = []
-
+    
+    # 完全に元通りのリスト内容に復元
+    summary_list = [f"【シート更新】{new_sheet_name}", f"【カテゴリ】{selected_category}", f"【処理時刻】{time_str}"]
     cells_to_update = []
 
     if items:
@@ -202,7 +203,8 @@ def process_audio(file_path, selected_category):
 
             if row_index:
                 cells_to_update.append(gspread.Cell(row=row_index, col=target_col_idx, value=cnt))
-                summary_list.append(f"・{loc}：{cnt}")
+                # 台が付いた元の表示に戻しました
+                summary_list.append(f"・{loc}：{cnt}台")
             else:
                 summary_list.append(f"・{loc}：※店舗が見つかりません")
         
@@ -274,9 +276,10 @@ if target_audio is not None:
                 now_time_str, summary_list, transcription = process_audio(temp_path, selected_category)
                 st.success("✅ 処理が完了しました！")
                 
-                # 最初と同じシンプルな結果表示に復元
+                # 完全に元の結果表示に戻しました
                 st.subheader("実行結果")
                 st.write(f"**日時:** {now_time_str}")
+                st.write("**更新データ:**")
                 for item in summary_list:
                     st.write(item)
                 st.write(f"**全文文字起こし:** {transcription}")
