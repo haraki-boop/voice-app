@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -10,24 +11,31 @@ import gspread
 import streamlit as st
 
 # ==========================================
-# 設定項目 (st.secrets から安全に読み込み)
+# 設定項目
 # ==========================================
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-SPREADSHEET_NAME = "音声アプリ"          # Googleスプレッドシートのファイル名
-TEMPLATE_SHEET_NAME = "台数表（原本）"  # コピー元にするタブの名前
-LOG_SHEET_NAME = "音声ログ"             # ログ保存用のタブの名前
+SPREADSHEET_NAME = "音声アプリ"          # スプレッドシート名
+TEMPLATE_SHEET_NAME = "集計表（原本）"  # 原本タブ名
+LOG_SHEET_NAME = "音声ログ"
 LOCAL_CREDENTIALS_FILE = "sheet_key.json"
 CHATWORK_API_TOKEN = st.secrets.get("CHATWORK_API_TOKEN", "")
 CHATWORK_ROOM_ID = st.secrets.get("CHATWORK_ROOM_ID", "434281068")
 
-# 日本標準時 (JST = UTC+9) のタイムゾーン定義
+# 日本標準時 (JST = UTC+9)
 JST = timezone(timedelta(hours=9))
 
-st.set_page_config(page_title="音声台数表アプリ", page_icon="🎙️")
-st.title("🎙️ 音声台数表 自動入力アプリ")
+# カテゴリと列（C=3, D=4, E=5, F=6）のマッピング
+CATEGORY_COL_MAP = {
+    "水産（サイロ）": 3,
+    "水産（構内）": 4,
+    "畜産": 5,
+    "おにぎり": 6
+}
 
+st.set_page_config(page_title="音声カゴ車数 自動入力", page_icon="🎙️")
+st.title("🎙️ 音声カゴ車数 自動入力アプリ")
 
-# --- スプレッドシート接続関数 ---
+# --- スプレッドシート接続 ---
 def get_gspread_client():
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -46,88 +54,63 @@ def get_gspread_client():
     else:
         raise FileNotFoundError("スプレッドシートの認証情報が見つかりません。")
 
-
-# --- ワークシート取得・初期化関数 ---
 def get_or_create_sheet(spreadsheet, sheet_name, headers):
     try:
         ws = spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(title=sheet_name, rows="100", cols="10")
-
     first_row = ws.row_values(1)
     if not first_row:
         ws.append_row(headers)
     return ws
 
-
-# --- Chatwork送信関数 ---
 def send_chatwork_message(message):
-    if not CHATWORK_API_TOKEN:
-        return False
+    if not CHATWORK_API_TOKEN: return False
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
-    headers = {
-        "X-ChatWorkToken": CHATWORK_API_TOKEN,
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
+    headers = {"X-ChatWorkToken": CHATWORK_API_TOKEN, "Content-Type": "application/x-www-form-urlencoded"}
     data = urllib.parse.urlencode({"body": message}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req) as res:
-            return True
-    except Exception:
-        return False
-
+        with urllib.request.urlopen(req): return True
+    except Exception: return False
 
 # --- 音声処理メイン関数 ---
-def process_audio(file_path):
-    if not GEMINI_API_KEY:
-        raise ValueError("Gemini APIキーが設定されていません。")
-
+def process_audio(file_path, selected_category):
     client = genai.Client(api_key=GEMINI_API_KEY)
-
     gc = get_gspread_client()
     spreadsheet = gc.open(SPREADSHEET_NAME)
 
-    # 「音声ログ」タブの取得
-    ws_log = get_or_create_sheet(
-        spreadsheet, LOG_SHEET_NAME, ["登録日時", "対象シート", "店舗名", "台数", "音声全文"]
-    )
+    ws_log = get_or_create_sheet(spreadsheet, LOG_SHEET_NAME, ["登録日時", "対象シート", "カテゴリ", "店舗名", "台数", "音声全文"])
 
-    # 1. 日本時間（JST）で現在日時を取得
     now_dt = datetime.now(JST)
-    weekdays_jp = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
-    date_str = f"{now_dt.month}月{now_dt.day}日"
-    day_of_week = weekdays_jp[now_dt.weekday()]
+    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+    date_str = f"{now_dt.month}月{now_dt.day}日"          # 例: 8月14日
+    day_of_week = f"（{weekdays_jp[now_dt.weekday()]}）" # 例: （金）
+    time_str = now_dt.strftime("%H:%M")                  # 例: 14:30
 
-    # 2. Geminiアップロード
     uploaded_file = client.files.upload(file=file_path)
     while uploaded_file.state.name == "PROCESSING":
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 3. Gemini解析
-    prompt = """
-    音声ファイルを聴き取り、以下の【便情報】と【店舗・台数情報】を抽出してください。
+    # 抽出プロンプト（大→台への変換指示を追加）
+    prompt = f"""
+    音声ファイルを聴き取り、「店舗名」と「台数（数値）」の組を抽出してください。
 
-    【便情報】
-    ・bin_str: 便情報（例: "(2便)" や "(1便)"）。音声で言っていない場合は "(2便)" を標準とする。
+    【最重要ルール】
+    数字の直後にある「大」「だい」「ダイ」という発音は、必ず「台」に変換して出力してください。
+    （例：「5大」「5だい」➔「5」）※台数の項目は数値のみ(integer)にしてください。
 
-    【店舗・台数情報】
-    ・「店舗名」と「台数（数値）」の組を抽出。
-    ・店舗名補正ルール:
-        - 「文庫」「金沢」 ➔ 「金沢文庫」
-        - 「戸塚」 ➔ 「戸塚」
-        - 「長津田」 ➔ 「長津田」
-        - 「綱島」「横浜綱島」「つなしま」 ➔ 「横浜綱島」
+    【店舗名補正ルール】
+    ・「大高」「三好」「守山」「かかみが原」「ながくて」など、愛知・岐阜周辺の店舗名が入ります。誤認識しやすい地名に注意してください。
 
     【出力JSON形式】
-    {
-        "bin_str": "(2便)",
+    {{
         "items": [
-            {"location": "正式店舗名", "count": 台数数字}
+            {{"location": "店舗名", "count": 台数数字}}
         ],
         "transcription": "音声全文"
-    }
+    }}
     """
 
     response = None
@@ -150,14 +133,15 @@ def process_audio(file_path):
     client.files.delete(name=uploaded_file.name)
 
     result = json.loads(response.text)
-    bin_str = result.get("bin_str", "(2便)")
     items = result.get("items", [])
-    transcription = result.get("transcription", "")
+    raw_transcription = result.get("transcription", "")
+    
+    # 全文テキストに対しても強制的に「大/だい」を「台」に正規表現で置換
+    transcription = re.sub(r'(\d+)\s*[大だダ][いイ]?', r'\1台', raw_transcription)
     now_time_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 4. シートの複製・取得処理
-    clean_bin = bin_str.replace("(", "").replace(")", "").replace("便", "")
-    new_sheet_name = f"{date_str}_{clean_bin}便" if clean_bin != "便指定なし" else date_str
+    # シート名の決定（当日日付）
+    new_sheet_name = date_str
 
     try:
         ws = spreadsheet.worksheet(new_sheet_name)
@@ -166,48 +150,69 @@ def process_audio(file_path):
             template_ws = spreadsheet.worksheet(TEMPLATE_SHEET_NAME)
         except Exception:
             template_ws = spreadsheet.sheet1
-        
         ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
 
-    # 5. 日本時間の日付・曜日・便の書き込み
-    ws.update_cell(1, 2, date_str)      # B1セル：受領日の日付
-    ws.update_cell(1, 3, day_of_week)   # C1セル：受領日の曜日
-    ws.update_cell(1, 4, bin_str)       # D1セル：便
+    # 日付・曜日・終了時間の更新
+    ws.update_acell('D4', date_str)     # D4: 8月14日
+    ws.update_acell('E4', day_of_week)  # E4: （金）
+    ws.update_acell('F3', time_str)     # F3: 終了時間 (14:30)
 
-    # 6. 店舗台数の書き込み＆「音声ログ」タブへ履歴追加
-    a_column_values = ws.col_values(1)
-    summary_list = [f"【シート作成/更新】{new_sheet_name}"]
-    summary_list.append(f"・受領日: {date_str} ({day_of_week}) {bin_str}")
+    # 対象カテゴリの列番号を取得
+    target_col_idx = CATEGORY_COL_MAP[selected_category]
+
+    # B列（店舗名）の取得
+    b_column_values = ws.col_values(2)
+    summary_list = [f"【シート更新】{new_sheet_name}", f"【カテゴリ】{selected_category}", f"【処理時刻】{time_str}"]
 
     if items:
+        # 複数セルをまとめて更新するためのリスト
+        cell_updates = []
         for item in items:
             loc = item.get("location", "").strip()
             cnt = item.get("count", 0)
 
-            if not loc:
-                continue
+            if not loc: continue
 
-            # 「音声ログ」タブへ日本時間で追加
-            ws_log.append_row([now_time_str, new_sheet_name, loc, cnt, transcription])
+            # ログ書き込み
+            ws_log.append_row([now_time_str, new_sheet_name, selected_category, loc, cnt, transcription])
 
             row_index = None
-            for idx, cell_value in enumerate(a_column_values):
-                if cell_value.strip() == loc:
+            for idx, cell_value in enumerate(b_column_values):
+                # 完全一致または含まれているかで判定
+                if loc in cell_value.strip() or cell_value.strip() in loc:
                     row_index = idx + 1
                     break
 
             if row_index:
-                ws.update_cell(row_index, 6, cnt)  # F列（一括）に台数を書き込み
+                # 対象カテゴリの列に台数をセット
+                cell_updates.append({'range': f'{gspread.utils.rowcol_to_a1(row_index, target_col_idx)}', 'values': [[cnt]]})
                 summary_list.append(f"・{loc}：{cnt}台")
             else:
-                summary_list.append(f"・{loc}：店舗名がシートに見つかりません")
-    else:
-        ws_log.append_row([now_time_str, new_sheet_name, "なし", 0, transcription])
-        summary_list.append("・台数データ抽出なし")
+                summary_list.append(f"・{loc}：※店舗が見つかりません")
+        
+        # 値の一括更新
+        if cell_updates:
+            ws.batch_update(cell_updates, value_input_option='USER_ENTERED')
 
-    # 7. Chatworkへ通知
+    else:
+        ws_log.append_row([now_time_str, new_sheet_name, selected_category, "なし", 0, transcription])
+        summary_list.append("・データ抽出なし")
+
+    # --- 合計・総合計の自動計算関数セット ---
+    # G列（合計）に =SUM(C行:F行) を7行目〜32行目までセット
+    g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(7, 33)]
+    ws.update(range_name='G7:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
+
+    # 33行目（合計）と34行目（総合計）の式をセット
+    bottom_formulas = [
+        ['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)'], # 33行目
+        ['=SUM(C33:C33)', '=SUM(D33:D33)', '=SUM(E33:E33)', '=SUM(F33:F33)', '=SUM(G33:G33)'] # 34行目
+    ]
+    ws.update(range_name='C33:G34', values=bottom_formulas, value_input_option='USER_ENTERED')
+
+    # Chatwork通知
     details_str = "\n".join(summary_list)
-    cw_message = f"""[info][title]📱 自動シート作成＆台数入力完了[/title]処理日時: {now_time_str}
+    cw_message = f"""[info][title]📱 {selected_category} カゴ車数入力完了[/title]日時: {now_time_str}
 
 {details_str}
 
@@ -220,7 +225,17 @@ def process_audio(file_path):
 
 
 # --- UI画面 ---
-st.subheader("① 音声を準備")
+st.subheader("① 登録するカテゴリを選択")
+# 録音前にカテゴリを選べるラジオボタン
+selected_category = st.radio(
+    "どの項目に数値を入力しますか？",
+    ["水産（サイロ）", "水産（構内）", "畜産", "おにぎり"],
+    horizontal=True
+)
+
+st.divider()
+
+st.subheader("② 音声を準備")
 tab1, tab2 = st.tabs(["🎙️ スマホから直接録音", "📁 ファイルを選択"])
 
 target_audio = None
@@ -228,7 +243,7 @@ target_audio = None
 with tab1:
     audio_recorded = st.audio_input("タップして録音を開始（もう一度タップで停止）")
     if audio_recorded is not None:
-        st.success("✅ 音声データがセットされました！")
+        st.success(f"✅ {selected_category} の音声データがセットされました！")
         target_audio = audio_recorded
 
 with tab2:
@@ -238,21 +253,22 @@ with tab2:
 
 st.divider()
 
-st.subheader("② 処理を実行")
+st.subheader("③ 処理を実行")
 if target_audio is not None:
-    if st.button("🚀 自動コピーしてデータ入力する", type="primary"):
+    if st.button("🚀 解析してデータを更新する", type="primary"):
         temp_path = "temp_input_audio.wav"
         with open(temp_path, "wb") as f:
             f.write(target_audio.getbuffer())
 
-        with st.spinner("原本コピー・本日日付適用・台数更新・ログ記録中..."):
+        with st.spinner(f"【{selected_category}】のデータを解析・更新中..."):
             try:
-                now_time_str, summary_list, transcription = process_audio(temp_path)
+                now_time_str, summary_list, transcription = process_audio(temp_path, selected_category)
                 st.success("✅ 処理が完了しました！")
                 st.subheader("実行結果")
-                st.write(f"**日時:** {now_time_str}")
                 for item in summary_list:
                     st.write(item)
                 st.write(f"**全文文字起こし:** {transcription}")
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
+else:
+    st.info("上のマイクボタンを押して音声をセットしてください。")
