@@ -114,7 +114,6 @@ def process_audio(file_path, selected_category):
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 【単位あり・単位なしの両対応】ルールを調整
     prompt = f"""
     音声ファイルを聴き取り、「店舗名」と「台数（数値）」の組を抽出してください。
 
@@ -144,12 +143,12 @@ def process_audio(file_path, selected_category):
 
     音声で聞き取った店舗名は、必ず上記のリスト内のどれに該当するかを推測し、**リストと一言一句同じ正確な名前**で出力してください。
 
-    【出力JSON形式】
+    【出力JSON形式：必ずこのフォーマットで出力すること】
     {{
         "items": [
             {{"location": "店舗名", "count": 台数数字}}
         ],
-        "transcription": "音声全文"
+        "transcription": "必ずここに音声全文の文字起こしを出力してください"
     }}
     """
 
@@ -180,7 +179,7 @@ def process_audio(file_path, selected_category):
     now_time_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     target_col_idx = CATEGORY_COL_MAP[selected_category]
-    summary_list = [f"【シート更新】{new_sheet_name}", f"【カテゴリ】{selected_category}", f"【処理時刻】{time_str}"]
+    summary_list = []
 
     cells_to_update = []
 
@@ -275,15 +274,12 @@ if target_audio is not None:
                 now_time_str, summary_list, transcription = process_audio(temp_path, selected_category)
                 st.success("✅ 処理が完了しました！")
                 
-                st.subheader("📝 実行結果")
-                
-                # 文字起こしを一番上に目立たせて表示
-                st.info(f"**🗣️ 音声全文:**\n\n{transcription}")
-                
-                # 処理内容の一覧
-                st.write("**【シート反映データ】**")
+                # 最初と同じシンプルな結果表示に復元
+                st.subheader("実行結果")
+                st.write(f"**日時:** {now_time_str}")
                 for item in summary_list:
                     st.write(item)
+                st.write(f"**全文文字起こし:** {transcription}")
                     
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
