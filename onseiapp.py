@@ -184,7 +184,7 @@ def process_audio(file_path, selected_category):
                     break
 
             if row_index:
-                # 対象カテゴリの列に台数をセット
+                # 対象カテゴリの列に台数をセット（例：水産サイロの大高なら row_index=6, target_col=3 ➔ C6 を自動算出）
                 cell_updates.append({'range': f'{gspread.utils.rowcol_to_a1(row_index, target_col_idx)}', 'values': [[cnt]]})
                 summary_list.append(f"・{loc}：{cnt}台")
             else:
@@ -199,13 +199,13 @@ def process_audio(file_path, selected_category):
         summary_list.append("・データ抽出なし")
 
     # --- 合計・総合計の自動計算関数セット ---
-    # G列（合計）に =SUM(C行:F行) を7行目〜32行目までセット
-    g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(7, 33)]
-    ws.update(range_name='G7:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
+    # G列（合計）に =SUM(C行:F行) を6行目〜32行目までセット
+    g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(6, 33)]
+    ws.update(range_name='G6:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
 
     # 33行目（合計）と34行目（総合計）の式をセット
     bottom_formulas = [
-        ['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)'], # 33行目
+        ['=SUM(C6:C32)', '=SUM(D6:D32)', '=SUM(E6:E32)', '=SUM(F6:F32)', '=SUM(G6:G32)'], # 33行目
         ['=SUM(C33:C33)', '=SUM(D33:D33)', '=SUM(E33:E33)', '=SUM(F33:F33)', '=SUM(G33:G33)'] # 34行目
     ]
     ws.update(range_name='C33:G34', values=bottom_formulas, value_input_option='USER_ENTERED')
