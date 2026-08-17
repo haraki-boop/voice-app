@@ -84,25 +84,56 @@ def process_audio(file_path, selected_category):
 
     now_dt = datetime.now(JST)
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    date_str = f"{now_dt.month}月{now_dt.day}日"          # 例: 8月14日
-    day_of_week = f"（{weekdays_jp[now_dt.weekday()]}）" # 例: （金）
+    date_str = f"{now_dt.month}月{now_dt.day}日"          # 例: 8月17日
+    day_of_week = f"（{weekdays_jp[now_dt.weekday()]}）" # 例: （月）
     time_str = now_dt.strftime("%H:%M")                  # 例: 14:30
+    new_sheet_name = date_str
 
+    # 【改善1】AIに渡す前に、必ず先にターゲットシートを準備してB列の店舗名リストを確実に取得する
+    try:
+        ws = spreadsheet.worksheet(new_sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        try:
+            template_ws = spreadsheet.worksheet(TEMPLATE_SHEET_NAME)
+        except Exception:
+            template_ws = spreadsheet.sheet1
+        ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
+        # 過去のゴミデータを強制消去
+        ws.update_acell('B1', '')
+        ws.update_acell('C1', '')
+        ws.update_acell('D1', '')
+
+    # 日付・曜日・終了時間の更新
+    ws.update_acell('D4', date_str)
+    ws.update_acell('E4', day_of_week)
+    ws.update_acell('F3', time_str)
+
+    # ターゲットシートのB列から店舗リストを取得
+    b_column_values = ws.col_values(2)
+    valid_stores = [str(v).strip() for v in b_column_values[6:] if str(v).strip()]
+    valid_stores_str = "、".join(valid_stores)
+
+    # Geminiアップロード
     uploaded_file = client.files.upload(file=file_path)
     while uploaded_file.state.name == "PROCESSING":
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 抽出プロンプト（大→台への変換指示を追加）
+    # 【改善2】「に」を「2」と解釈させる強力なルールを追加
     prompt = f"""
     音声ファイルを聴き取り、「店舗名」と「台数（数値）」の組を抽出してください。
 
-    【最重要ルール】
-    数字の直後にある「大」「だい」「ダイ」という発音は、必ず「台」に変換して出力してください。
-    （例：「5大」「5だい」➔「5」）※台数の項目は数値のみ(integer)にしてください。
+    【最重要ルール（聞き間違いの補正）】
+    1. 数字の「2」が、助詞の「に」として誤認識されやすいです。（例：「大高に」「三好に」➔「大高 2」「三好 2」が正解です）。店舗名の直後に「に」と聞こえた場合は台数を「2」として抽出してください。
+    2. 数字の直後にある「大」「だい」「ダイ」という発音は、必ず「台」に変換してください。（例：「5大」➔「5」）
+    ※台数の項目は半角数字(integer)のみにしてください。
 
-    【店舗名補正ルール】
-    ・「大高」「三好」「守山」「かかみが原」「ながくて」など、愛知・岐阜周辺の店舗名が入ります。誤認識しやすい地名に注意してください。
+    【店舗名の自動補正（必須ルール）】
+    以下は今回の対象となる「正解の店舗名リスト」です：
+    {valid_stores_str}
+
+    音声で聞き取った店舗名は、必ず上記のリスト内のどれに該当するかを推測し、**リストと一言一句同じ正確な名前**で出力してください。
+    （例：「おびら」➔「尾平」、「きそがわ」➔「木曽根」など）
 
     【出力JSON形式】
     {{
@@ -136,37 +167,17 @@ def process_audio(file_path, selected_category):
     items = result.get("items", [])
     raw_transcription = result.get("transcription", "")
     
-    # 全文テキストに対しても強制的に「大/だい」を「台」に正規表現で置換
+    # 全文テキストに対しても強制的に「大/だい」を「台」に置換
     transcription = re.sub(r'(\d+)\s*[大だダ][いイ]?', r'\1台', raw_transcription)
     now_time_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # シート名の決定（当日日付）
-    new_sheet_name = date_str
-
-    try:
-        ws = spreadsheet.worksheet(new_sheet_name)
-    except gspread.exceptions.WorksheetNotFound:
-        try:
-            template_ws = spreadsheet.worksheet(TEMPLATE_SHEET_NAME)
-        except Exception:
-            template_ws = spreadsheet.sheet1
-        ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
-
-    # 日付・曜日・終了時間の更新
-    ws.update_acell('D4', date_str)     # D4: 8月14日
-    ws.update_acell('E4', day_of_week)  # E4: （金）
-    ws.update_acell('F3', time_str)     # F3: 終了時間 (14:30)
-
-    # 対象カテゴリの列番号を取得
     target_col_idx = CATEGORY_COL_MAP[selected_category]
-
-    # B列（店舗名）の取得
-    b_column_values = ws.col_values(2)
     summary_list = [f"【シート更新】{new_sheet_name}", f"【カテゴリ】{selected_category}", f"【処理時刻】{time_str}"]
 
+    # 【改善3】確実に入力される gspread.Cell 方式に変更
+    cells_to_update = []
+
     if items:
-        # 複数セルをまとめて更新するためのリスト
-        cell_updates = []
         for item in items:
             loc = item.get("location", "").strip()
             cnt = item.get("count", 0)
@@ -176,36 +187,34 @@ def process_audio(file_path, selected_category):
             # ログ書き込み
             ws_log.append_row([now_time_str, new_sheet_name, selected_category, loc, cnt, transcription])
 
+            loc_clean = loc.replace(" ", "").replace(" ", "")
             row_index = None
             for idx, cell_value in enumerate(b_column_values):
-                # 完全一致または含まれているかで判定
-                if loc in cell_value.strip() or cell_value.strip() in loc:
+                sheet_val = str(cell_value).replace(" ", "").replace(" ", "")
+                if sheet_val and (loc_clean in sheet_val or sheet_val in loc_clean):
                     row_index = idx + 1
                     break
 
             if row_index:
-                # 対象カテゴリの列に台数をセット（例：水産サイロの大高なら row_index=6, target_col=3 ➔ C6 を自動算出）
-                cell_updates.append({'range': f'{gspread.utils.rowcol_to_a1(row_index, target_col_idx)}', 'values': [[cnt]]})
+                # 対象のセルオブジェクトをリストに追加
+                cells_to_update.append(gspread.Cell(row=row_index, col=target_col_idx, value=cnt))
                 summary_list.append(f"・{loc}：{cnt}台")
             else:
                 summary_list.append(f"・{loc}：※店舗が見つかりません")
         
-        # 値の一括更新
-        if cell_updates:
-            ws.batch_update(cell_updates, value_input_option='USER_ENTERED')
-
+        # セルを一括で確実に書き込み
+        if cells_to_update:
+            ws.update_cells(cells_to_update, value_input_option='USER_ENTERED')
     else:
         ws_log.append_row([now_time_str, new_sheet_name, selected_category, "なし", 0, transcription])
         summary_list.append("・データ抽出なし")
 
     # --- 合計・総合計の自動計算関数セット ---
-    # G列（合計）に =SUM(C行:F行) を6行目〜32行目までセット
-    g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(6, 33)]
-    ws.update(range_name='G6:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
+    g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(7, 33)]
+    ws.update(range_name='G7:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
 
-    # 33行目（合計）と34行目（総合計）の式をセット
     bottom_formulas = [
-        ['=SUM(C6:C32)', '=SUM(D6:D32)', '=SUM(E6:E32)', '=SUM(F6:F32)', '=SUM(G6:G32)'], # 33行目
+        ['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)'], # 33行目
         ['=SUM(C33:C33)', '=SUM(D33:D33)', '=SUM(E33:E33)', '=SUM(F33:F33)', '=SUM(G33:G33)'] # 34行目
     ]
     ws.update(range_name='C33:G34', values=bottom_formulas, value_input_option='USER_ENTERED')
@@ -226,7 +235,6 @@ def process_audio(file_path, selected_category):
 
 # --- UI画面 ---
 st.subheader("① 登録するカテゴリを選択")
-# 録音前にカテゴリを選べるラジオボタン
 selected_category = st.radio(
     "どの項目に数値を入力しますか？",
     ["水産（サイロ）", "水産（構内）", "畜産", "おにぎり"],
