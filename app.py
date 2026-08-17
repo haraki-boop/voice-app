@@ -84,12 +84,11 @@ def process_audio(file_path, selected_category):
 
     now_dt = datetime.now(JST)
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    date_str = f"{now_dt.month}月{now_dt.day}日"          # 例: 8月17日
-    day_of_week = f"（{weekdays_jp[now_dt.weekday()]}）" # 例: （月）
-    time_str = now_dt.strftime("%H:%M")                  # 例: 14:30
+    date_str = f"{now_dt.month}月{now_dt.day}日"
+    day_of_week = f"（{weekdays_jp[now_dt.weekday()]}）"
+    time_str = now_dt.strftime("%H:%M")
     new_sheet_name = date_str
 
-    # 【改善1】AIに渡す前に、必ず先にターゲットシートを準備してB列の店舗名リストを確実に取得する
     try:
         ws = spreadsheet.worksheet(new_sheet_name)
     except gspread.exceptions.WorksheetNotFound:
@@ -98,42 +97,52 @@ def process_audio(file_path, selected_category):
         except Exception:
             template_ws = spreadsheet.sheet1
         ws = template_ws.duplicate(new_sheet_name=new_sheet_name)
-        # 過去のゴミデータを強制消去
         ws.update_acell('B1', '')
         ws.update_acell('C1', '')
         ws.update_acell('D1', '')
 
-    # 日付・曜日・終了時間の更新
     ws.update_acell('D4', date_str)
     ws.update_acell('E4', day_of_week)
     ws.update_acell('F3', time_str)
 
-    # ターゲットシートのB列から店舗リストを取得
     b_column_values = ws.col_values(2)
     valid_stores = [str(v).strip() for v in b_column_values[6:] if str(v).strip()]
     valid_stores_str = "、".join(valid_stores)
 
-    # Geminiアップロード
     uploaded_file = client.files.upload(file=file_path)
     while uploaded_file.state.name == "PROCESSING":
         time.sleep(2)
         uploaded_file = client.files.get(name=uploaded_file.name)
 
-    # 【改善2】「に」を「2」と解釈させる強力なルールを追加
+    # 【単位あり・単位なしの両対応】ルールを調整
     prompt = f"""
     音声ファイルを聴き取り、「店舗名」と「台数（数値）」の組を抽出してください。
 
-    【最重要ルール（聞き間違いの補正）】
-    1. 数字の「2」が、助詞の「に」として誤認識されやすいです。（例：「大高に」「三好に」➔「大高 2」「三好 2」が正解です）。店舗名の直後に「に」と聞こえた場合は台数を「2」として抽出してください。
-    2. 数字の直後にある「大」「だい」「ダイ」という発音は、必ず「台」に変換してください。（例：「5大」➔「5」）
-    ※台数の項目は半角数字(integer)のみにしてください。
+    【最重要ルール（数値の聞き取り・単位の有無）】
+    ユーザーは店舗名の後に数字を言いますが、「台」という単位を付ける場合と、付けない場合があります。
+    「台」が付いていてもいなくても、必ず数字を抽出してください。
+    また、単位を省略した結果、助詞や敬称のように聞こえる場合も、以下のように「数値」として解釈してください。
+
+    ・「〜いち」「〜1台」 ➔ 1
+    ・「〜に」「〜2台」 ➔ 2 （例：「大高に」「大高2台」はどちらも「大高 2」）
+    ・「〜さん」「〜3台」 ➔ 3 （例：「大高さん」「大高3台」はどちらも「大高 3」）
+    ・「〜よん」「〜し」「〜4台」 ➔ 4
+    ・「〜ご」「〜5台」 ➔ 5
+    ・「〜ろく」「〜6台」 ➔ 6
+    ・「〜なな」「〜しち」「〜7台」 ➔ 7 （例：「大高なな」「大高7台」はどちらも「大高 7」）
+    ・「〜はち」「〜8台」 ➔ 8
+    ・「〜きゅう」「〜く」「〜9台」 ➔ 9
+    ・「〜じゅう」「〜10台」 ➔ 10
+    ・「〜じゅういち」「〜11台」 ➔ 11
+
+    ※数字の直後に「大」「だい」「ダイ」と聞こえた場合は単位の「台」のことです。
+    ※出力する「count」の項目は、半角数字(integer)のみにしてください。
 
     【店舗名の自動補正（必須ルール）】
     以下は今回の対象となる「正解の店舗名リスト」です：
     {valid_stores_str}
 
     音声で聞き取った店舗名は、必ず上記のリスト内のどれに該当するかを推測し、**リストと一言一句同じ正確な名前**で出力してください。
-    （例：「おびら」➔「尾平」、「きそがわ」➔「木曽根」など）
 
     【出力JSON形式】
     {{
@@ -167,14 +176,12 @@ def process_audio(file_path, selected_category):
     items = result.get("items", [])
     raw_transcription = result.get("transcription", "")
     
-    # 全文テキストに対しても強制的に「大/だい」を「台」に置換
     transcription = re.sub(r'(\d+)\s*[大だダ][いイ]?', r'\1台', raw_transcription)
     now_time_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     target_col_idx = CATEGORY_COL_MAP[selected_category]
     summary_list = [f"【シート更新】{new_sheet_name}", f"【カテゴリ】{selected_category}", f"【処理時刻】{time_str}"]
 
-    # 【改善3】確実に入力される gspread.Cell 方式に変更
     cells_to_update = []
 
     if items:
@@ -184,7 +191,6 @@ def process_audio(file_path, selected_category):
 
             if not loc: continue
 
-            # ログ書き込み
             ws_log.append_row([now_time_str, new_sheet_name, selected_category, loc, cnt, transcription])
 
             loc_clean = loc.replace(" ", "").replace(" ", "")
@@ -196,30 +202,26 @@ def process_audio(file_path, selected_category):
                     break
 
             if row_index:
-                # 対象のセルオブジェクトをリストに追加
                 cells_to_update.append(gspread.Cell(row=row_index, col=target_col_idx, value=cnt))
-                summary_list.append(f"・{loc}：{cnt}台")
+                summary_list.append(f"・{loc}：{cnt}")
             else:
                 summary_list.append(f"・{loc}：※店舗が見つかりません")
         
-        # セルを一括で確実に書き込み
         if cells_to_update:
             ws.update_cells(cells_to_update, value_input_option='USER_ENTERED')
     else:
         ws_log.append_row([now_time_str, new_sheet_name, selected_category, "なし", 0, transcription])
         summary_list.append("・データ抽出なし")
 
-    # --- 合計・総合計の自動計算関数セット ---
     g_col_formulas = [[f'=SUM(C{r}:F{r})'] for r in range(7, 33)]
     ws.update(range_name='G7:G32', values=g_col_formulas, value_input_option='USER_ENTERED')
 
     bottom_formulas = [
-        ['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)'], # 33行目
-        ['=SUM(C33:C33)', '=SUM(D33:D33)', '=SUM(E33:E33)', '=SUM(F33:F33)', '=SUM(G33:G33)'] # 34行目
+        ['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)'],
+        ['=SUM(C33:C33)', '=SUM(D33:D33)', '=SUM(E33:E33)', '=SUM(F33:F33)', '=SUM(G33:G33)']
     ]
     ws.update(range_name='C33:G34', values=bottom_formulas, value_input_option='USER_ENTERED')
 
-    # Chatwork通知
     details_str = "\n".join(summary_list)
     cw_message = f"""[info][title]📱 {selected_category} カゴ車数入力完了[/title]日時: {now_time_str}
 
@@ -272,10 +274,17 @@ if target_audio is not None:
             try:
                 now_time_str, summary_list, transcription = process_audio(temp_path, selected_category)
                 st.success("✅ 処理が完了しました！")
-                st.subheader("実行結果")
+                
+                st.subheader("📝 実行結果")
+                
+                # 文字起こしを一番上に目立たせて表示
+                st.info(f"**🗣️ 音声全文:**\n\n{transcription}")
+                
+                # 処理内容の一覧
+                st.write("**【シート反映データ】**")
                 for item in summary_list:
                     st.write(item)
-                st.write(f"**全文文字起こし:** {transcription}")
+                    
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 else:
