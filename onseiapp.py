@@ -225,8 +225,8 @@ def process_audio(file_path, selected_category):
     row33_formulas = [['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)']]
     ws.update(range_name='C33:G33', values=row33_formulas, value_input_option='USER_ENTERED')
     
-    # 34行目（総合計）の複合セル用に、C34に33行目の合計をセット
-    ws.update_acell('C34', '=SUM(C33:F33)')
+    # 34行目（総合計）の複合セル用に、D34に33行目の合計をセット（D〜Hの複合セル対応）
+    ws.update_acell('D34', '=SUM(C33:F33)')
 
     details_str = "\n".join(summary_list)
     cw_message = f"""[info][title]📱 {selected_category} カゴ車数入力完了[/title]日時: {now_time_str}
@@ -257,13 +257,15 @@ tab1, tab2 = st.tabs(["🎙️ スマホから直接録音", "📁 ファイル�
 target_audio = None
 
 with tab1:
-    audio_recorded = st.audio_input("タップして録音を開始（もう一度タップで停止）")
+    # カテゴリの値をkeyに含めることで、カテゴリ変更時に録音データを自動リセット
+    audio_recorded = st.audio_input("タップして録音を開始（もう一度タップで停止）", key=f"rec_{selected_category}")
     if audio_recorded is not None:
         st.success(f"✅ {selected_category} の音声データがセットされました！")
         target_audio = audio_recorded
 
 with tab2:
-    audio_uploaded = st.file_uploader("録音済みファイルをアップロード", type=["m4a", "mp3", "wav", "aac"])
+    # こちらも同様にリセットされるようにkeyを設定
+    audio_uploaded = st.file_uploader("録音済みファイルをアップロード", type=["m4a", "mp3", "wav", "aac"], key=f"up_{selected_category}")
     if audio_uploaded is not None:
         target_audio = audio_uploaded
 
@@ -281,6 +283,7 @@ if target_audio is not None:
                 now_time_str, summary_list, transcription = process_audio(temp_path, selected_category)
                 st.success("✅ 処理が完了しました！")
                 
+                # 完全に元の結果表示
                 st.subheader("実行結果")
                 st.write(f"**日時:** {now_time_str}")
                 st.write("**更新データ:**")
