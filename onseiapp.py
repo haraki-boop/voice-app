@@ -225,8 +225,8 @@ def process_audio(file_path, selected_category):
     row33_formulas = [['=SUM(C7:C32)', '=SUM(D7:D32)', '=SUM(E7:E32)', '=SUM(F7:F32)', '=SUM(G7:G32)']]
     ws.update(range_name='C33:G33', values=row33_formulas, value_input_option='USER_ENTERED')
     
-    # 34行目（総合計）の複合セル用に、D34に33行目の合計をセット（D〜Hの複合セル対応）
-    ws.update_acell('D34', '=SUM(C33:F33)')
+    # 34行目（総合計）の複合セル用に、結合の開始位置であるB34に式をセット
+    ws.update_acell('B34', '=SUM(C33:F33)')
 
     details_str = "\n".join(summary_list)
     cw_message = f"""[info][title]📱 {selected_category} カゴ車数入力完了[/title]日時: {now_time_str}
